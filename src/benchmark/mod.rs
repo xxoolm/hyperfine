@@ -6,12 +6,15 @@ pub mod timing_result;
 
 use std::cmp;
 
+use crate::benchmark::executor::BenchmarkIteration;
 use crate::command::Command;
-use crate::options::{CmdFailureAction, ExecutorKind, Options, OutputStyleOption};
+use crate::options::{
+    CmdFailureAction, CommandOutputPolicy, ExecutorKind, Options, OutputStyleOption,
+};
 use crate::outlier_detection::{modified_zscores, OUTLIER_THRESHOLD};
 use crate::output::format::{format_duration, format_duration_unit};
 use crate::output::progress_bar::get_progress_bar;
-use crate::output::warnings::Warnings;
+use crate::output::warnings::{OutlierWarningOptions, Warnings};
 use crate::parameter::ParameterNameAndValue;
 use crate::util::exit_code::extract_exit_code;
 use crate::util::min_max::{max, min};
@@ -55,9 +58,15 @@ impl<'a> Benchmark<'a> {
         &self,
         command: &Command<'_>,
         error_output: &'static str,
+        output_policy: &CommandOutputPolicy,
     ) -> Result<TimingResult> {
         self.executor
-            .run_command_and_measure(command, Some(CmdFailureAction::RaiseError))
+            .run_command_and_measure(
+                command,
+                executor::BenchmarkIteration::NonBenchmarkRun,
+                Some(CmdFailureAction::RaiseError),
+                output_policy,
+            )
             .map(|r| r.0)
             .map_err(|_| anyhow!(error_output))
     }
@@ -66,6 +75,7 @@ impl<'a> Benchmark<'a> {
     fn run_setup_command(
         &self,
         parameters: impl IntoIterator<Item = ParameterNameAndValue<'a>>,
+        output_policy: &CommandOutputPolicy,
     ) -> Result<TimingResult> {
         let command = self
             .options
@@ -77,7 +87,7 @@ impl<'a> Benchmark<'a> {
                             Append ' || true' to the command if you are sure that this can be ignored.";
 
         Ok(command
-            .map(|cmd| self.run_intermediate_command(&cmd, error_output))
+            .map(|cmd| self.run_intermediate_command(&cmd, error_output, output_policy))
             .transpose()?
             .unwrap_or_default())
     }
@@ -86,6 +96,7 @@ impl<'a> Benchmark<'a> {
     fn run_cleanup_command(
         &self,
         parameters: impl IntoIterator<Item = ParameterNameAndValue<'a>>,
+        output_policy: &CommandOutputPolicy,
     ) -> Result<TimingResult> {
         let command = self
             .options
@@ -97,36 +108,54 @@ impl<'a> Benchmark<'a> {
                             Append ' || true' to the command if you are sure that this can be ignored.";
 
         Ok(command
-            .map(|cmd| self.run_intermediate_command(&cmd, error_output))
+            .map(|cmd| self.run_intermediate_command(&cmd, error_output, output_policy))
             .transpose()?
             .unwrap_or_default())
     }
 
     /// Run the command specified by `--prepare`.
-    fn run_preparation_command(&self, command: &Command<'_>) -> Result<TimingResult> {
+    fn run_preparation_command(
+        &self,
+        command: &Command<'_>,
+        output_policy: &CommandOutputPolicy,
+    ) -> Result<TimingResult> {
         let error_output = "The preparation command terminated with a non-zero exit code. \
                             Append ' || true' to the command if you are sure that this can be ignored.";
 
-        self.run_intermediate_command(command, error_output)
+        self.run_intermediate_command(command, error_output, output_policy)
+    }
+
+    /// Run the command specified by `--conclude`.
+    fn run_conclusion_command(
+        &self,
+        command: &Command<'_>,
+        output_policy: &CommandOutputPolicy,
+    ) -> Result<TimingResult> {
+        let error_output = "The conclusion command terminated with a non-zero exit code. \
+                            Append ' || true' to the command if you are sure that this can be ignored.";
+
+        self.run_intermediate_command(command, error_output, output_policy)
     }
 
     /// Run the benchmark for a single command
     pub fn run(&self) -> Result<BenchmarkResult> {
-        let command_name = self.command.get_name();
         if self.options.output_style != OutputStyleOption::Disabled {
             println!(
                 "{}{}: {}",
                 "Benchmark ".bold(),
                 (self.number + 1).to_string().bold(),
-                command_name,
+                self.command.get_name_with_unused_parameters(),
             );
         }
 
         let mut times_real: Vec<Second> = vec![];
         let mut times_user: Vec<Second> = vec![];
         let mut times_system: Vec<Second> = vec![];
+        let mut memory_usage_byte: Vec<u64> = vec![];
         let mut exit_codes: Vec<Option<i32>> = vec![];
         let mut all_succeeded = true;
+
+        let output_policy = &self.options.command_output_policies[self.number];
 
         let preparation_command = self.options.preparation_command.as_ref().map(|values| {
             let preparation_command = if values.len() == 1 {
@@ -140,14 +169,34 @@ impl<'a> Benchmark<'a> {
                 self.command.get_parameters().iter().cloned(),
             )
         });
+
         let run_preparation_command = || {
             preparation_command
                 .as_ref()
-                .map(|cmd| self.run_preparation_command(cmd))
+                .map(|cmd| self.run_preparation_command(cmd, output_policy))
                 .transpose()
         };
 
-        self.run_setup_command(self.command.get_parameters().iter().cloned())?;
+        let conclusion_command = self.options.conclusion_command.as_ref().map(|values| {
+            let conclusion_command = if values.len() == 1 {
+                &values[0]
+            } else {
+                &values[self.number]
+            };
+            Command::new_parametrized(
+                None,
+                conclusion_command,
+                self.command.get_parameters().iter().cloned(),
+            )
+        });
+        let run_conclusion_command = || {
+            conclusion_command
+                .as_ref()
+                .map(|cmd| self.run_conclusion_command(cmd, output_policy))
+                .transpose()
+        };
+
+        self.run_setup_command(self.command.get_parameters().iter().cloned(), output_policy)?;
 
         // Warmup phase
         if self.options.warmup_count > 0 {
@@ -161,9 +210,15 @@ impl<'a> Benchmark<'a> {
                 None
             };
 
-            for _ in 0..self.options.warmup_count {
+            for i in 0..self.options.warmup_count {
                 let _ = run_preparation_command()?;
-                let _ = self.executor.run_command_and_measure(self.command, None)?;
+                let _ = self.executor.run_command_and_measure(
+                    self.command,
+                    BenchmarkIteration::Warmup(i),
+                    None,
+                    output_policy,
+                )?;
+                let _ = run_conclusion_command()?;
                 if let Some(bar) = progress_bar.as_ref() {
                     bar.inc(1)
                 }
@@ -189,13 +244,24 @@ impl<'a> Benchmark<'a> {
             preparation_result.map_or(0.0, |res| res.time_real + self.executor.time_overhead());
 
         // Initial timing run
-        let (res, status) = self.executor.run_command_and_measure(self.command, None)?;
+        let (res, status) = self.executor.run_command_and_measure(
+            self.command,
+            BenchmarkIteration::Benchmark(0),
+            None,
+            output_policy,
+        )?;
         let success = status.success();
+
+        let conclusion_result = run_conclusion_command()?;
+        let conclusion_overhead =
+            conclusion_result.map_or(0.0, |res| res.time_real + self.executor.time_overhead());
 
         // Determine number of benchmark runs
         let runs_in_min_time = (self.options.min_benchmarking_time
-            / (res.time_real + self.executor.time_overhead() + preparation_overhead))
-            as u64;
+            / (res.time_real
+                + self.executor.time_overhead()
+                + preparation_overhead
+                + conclusion_overhead)) as u64;
 
         let count = {
             let min = cmp::max(runs_in_min_time, self.options.run_bounds.min);
@@ -214,6 +280,7 @@ impl<'a> Benchmark<'a> {
         times_real.push(res.time_real);
         times_user.push(res.time_user);
         times_system.push(res.time_system);
+        memory_usage_byte.push(res.memory_usage_byte);
         exit_codes.push(extract_exit_code(status));
 
         all_succeeded = all_succeeded && success;
@@ -227,7 +294,7 @@ impl<'a> Benchmark<'a> {
         }
 
         // Gather statistics (perform the actual benchmark)
-        for _ in 0..count_remaining {
+        for i in 0..count_remaining {
             run_preparation_command()?;
 
             let msg = {
@@ -239,12 +306,18 @@ impl<'a> Benchmark<'a> {
                 bar.set_message(msg.to_owned())
             }
 
-            let (res, status) = self.executor.run_command_and_measure(self.command, None)?;
+            let (res, status) = self.executor.run_command_and_measure(
+                self.command,
+                BenchmarkIteration::Benchmark(i + 1),
+                None,
+                output_policy,
+            )?;
             let success = status.success();
 
             times_real.push(res.time_real);
             times_user.push(res.time_user);
             times_system.push(res.time_system);
+            memory_usage_byte.push(res.memory_usage_byte);
             exit_codes.push(extract_exit_code(status));
 
             all_succeeded = all_succeeded && success;
@@ -252,6 +325,8 @@ impl<'a> Benchmark<'a> {
             if let Some(bar) = progress_bar.as_ref() {
                 bar.inc(1)
             }
+
+            run_conclusion_command()?;
         }
 
         if let Some(bar) = progress_bar.as_ref() {
@@ -277,7 +352,7 @@ impl<'a> Benchmark<'a> {
         let (mean_str, time_unit) = format_duration_unit(t_mean, self.options.time_unit);
         let min_str = format_duration(t_min, Some(time_unit));
         let max_str = format_duration(t_max, Some(time_unit));
-        let num_str = format!("{} runs", t_num);
+        let num_str = format!("{t_num} runs");
 
         let user_str = format_duration(user_mean, Some(time_unit));
         let system_str = format_duration(system_mean, Some(time_unit));
@@ -326,17 +401,32 @@ impl<'a> Benchmark<'a> {
             warnings.push(Warnings::FastExecutionTime);
         }
 
-        // Check programm exit codes
+        // Check program exit codes
         if !all_succeeded {
             warnings.push(Warnings::NonZeroExitCode);
         }
 
         // Run outlier detection
         let scores = modified_zscores(&times_real);
+
+        let outlier_warning_options = OutlierWarningOptions {
+            warmup_in_use: self.options.warmup_count > 0,
+            prepare_in_use: self
+                .options
+                .preparation_command
+                .as_ref()
+                .map(|v| v.len())
+                .unwrap_or(0)
+                > 0,
+        };
+
         if scores[0] > OUTLIER_THRESHOLD {
-            warnings.push(Warnings::SlowInitialRun(times_real[0]));
+            warnings.push(Warnings::SlowInitialRun(
+                times_real[0],
+                outlier_warning_options,
+            ));
         } else if scores.iter().any(|&s| s.abs() > OUTLIER_THRESHOLD) {
-            warnings.push(Warnings::OutliersDetected);
+            warnings.push(Warnings::OutliersDetected(outlier_warning_options));
         }
 
         if !warnings.is_empty() {
@@ -351,10 +441,11 @@ impl<'a> Benchmark<'a> {
             println!(" ");
         }
 
-        self.run_cleanup_command(self.command.get_parameters().iter().cloned())?;
+        self.run_cleanup_command(self.command.get_parameters().iter().cloned(), output_policy)?;
 
         Ok(BenchmarkResult {
-            command: command_name,
+            command: self.command.get_name(),
+            command_with_unused_parameters: self.command.get_name_with_unused_parameters(),
             mean: t_mean,
             stddev: t_stddev,
             median: t_median,
@@ -363,6 +454,7 @@ impl<'a> Benchmark<'a> {
             min: t_min,
             max: t_max,
             times: Some(times_real),
+            memory_usage_byte: Some(memory_usage_byte),
             exit_codes,
             parameters: self
                 .command

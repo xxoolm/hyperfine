@@ -12,6 +12,11 @@ pub struct BenchmarkResult {
     /// The full command line of the program that is being benchmarked
     pub command: String,
 
+    /// The full command line of the program that is being benchmarked, possibly including a list of
+    /// parameters that were not used in the command line template.
+    #[serde(skip_serializing)]
+    pub command_with_unused_parameters: String,
+
     /// The average run time
     pub mean: Second,
 
@@ -36,6 +41,10 @@ pub struct BenchmarkResult {
     /// All run time measurements
     #[serde(skip_serializing_if = "Option::is_none")]
     pub times: Option<Vec<Second>>,
+
+    /// Maximum memory usage of the process, in bytes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_usage_byte: Option<Vec<u64>>,
 
     /// Exit codes of all command invocations
     pub exit_codes: Vec<Option<i32>>,

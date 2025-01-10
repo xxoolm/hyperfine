@@ -102,7 +102,7 @@ in question.
 
 If you want to run a benchmark *without an intermediate shell*, you can use the `-N` or `--shell=none`
 option. This is helpful for very fast commands (< 5 ms) where the shell startup overhead correction would
-produce a significant amount of noise. Note that you can not use shell syntax like `*` or `~` in this case.
+produce a significant amount of noise. Note that you cannot use shell syntax like `*` or `~` in this case.
 ```
 hyperfine -N 'grep TODO /home/user'
 ```
@@ -163,15 +163,15 @@ like `--warmup`, `--prepare <cmd>`, `--setup <cmd>` or `--cleanup <cmd>`:
 
 ## Installation
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/hyperfine.svg)](https://repology.org/project/hyperfine/versions)
+[![Packaging status](https://repology.org/badge/vertical-allrepos/hyperfine.svg?columns=3&exclude_unsupported=1)](https://repology.org/project/hyperfine/versions)
 
 ### On Ubuntu
 
 Download the appropriate `.deb` package from the [Release page](https://github.com/sharkdp/hyperfine/releases)
 and install it via `dpkg`:
 ```
-wget https://github.com/sharkdp/hyperfine/releases/download/v1.15.0/hyperfine_1.15.0_amd64.deb
-sudo dpkg -i hyperfine_1.15.0_amd64.deb
+wget https://github.com/sharkdp/hyperfine/releases/download/v1.19.0/hyperfine_1.19.0_amd64.deb
+sudo dpkg -i hyperfine_1.19.0_amd64.deb
 ```
 
 ### On Fedora
@@ -191,9 +191,24 @@ apk add hyperfine
 
 ### On Arch Linux
 
-On Arch Linux, hyperfine can be installed [from the official repositories](https://www.archlinux.org/packages/community/x86_64/hyperfine/):
+On Arch Linux, hyperfine can be installed [from the official repositories](https://archlinux.org/packages/extra/x86_64/hyperfine/):
 ```
 pacman -S hyperfine
+```
+
+### On Debian Linux
+
+On Debian Linux, hyperfine can be installed [from the testing repositories](https://packages.debian.org/testing/main/hyperfine):
+```
+apt install hyperfine
+```
+
+### On Exherbo Linux
+
+On Exherbo Linux, hyperfine can be installed [from the rust repositories](https://gitlab.exherbo.org/exherbo/rust/-/tree/master/packages/sys-apps/hyperfine):
+```
+cave resolve -x repository/rust
+cave resolve -x hyperfine
 ```
 
 ### On Funtoo Linux
@@ -208,6 +223,21 @@ emerge app-benchmarks/hyperfine
 On NixOS, hyperfine can be installed [from the official repositories](https://nixos.org/nixos/packages.html?query=hyperfine):
 ```
 nix-env -i hyperfine
+```
+
+### On Flox
+
+On Flox, hyperfine can be installed as follows.
+```
+flox install hyperfine
+```
+Hyperfine's version in Flox follows that of Nix.
+
+### On openSUSE
+
+On openSUSE, hyperfine can be installed [from the official repositories](https://software.opensuse.org/package/hyperfine):
+```
+zypper install hyperfine
 ```
 
 ### On Void Linux
@@ -244,6 +274,19 @@ pkg install hyperfine
 doas pkg_add hyperfine
 ```
 
+### On Windows
+
+Hyperfine can be installed via [Chocolatey](https://community.chocolatey.org/packages/hyperfine), [Scoop](https://scoop.sh/#/apps?q=hyperfine&s=0&d=1&o=true&id=8f7c10f75ecf5f9e42a862c615257328e2f70f61), or [Winget](https://github.com/microsoft/winget-pkgs/tree/master/manifests/s/sharkdp/hyperfine):
+```
+choco install hyperfine
+```
+```
+scoop install hyperfine
+```
+```
+winget install hyperfine
+```
+
 ### With conda
 
 Hyperfine can be installed via [`conda`](https://conda.io/en/latest/) from the [`conda-forge`](https://anaconda.org/conda-forge/hyperfine) channel:
@@ -255,10 +298,10 @@ conda install -c conda-forge hyperfine
 
 Hyperfine can be installed from source via [cargo](https://doc.rust-lang.org/cargo/):
 ```
-cargo install hyperfine
+cargo install --locked hyperfine
 ```
 
-Make sure that you use Rust 1.57 or higher.
+Make sure that you use Rust 1.76 or newer.
 
 ### From binaries (Linux, macOS, Windows)
 
@@ -266,12 +309,18 @@ Download the corresponding archive from the [Release page](https://github.com/sh
 
 ## Alternative tools
 
-Hyperfine is inspired by [bench](https://github.com/Gabriel439/bench).
+Hyperfine is inspired by [bench](https://github.com/Gabriella439/bench).
 
 ## Integration with other tools
 
 [Chronologer](https://github.com/dandavison/chronologer) is a tool that uses `hyperfine` to
 visualize changes in benchmark timings across your Git history.
+
+[Bencher](https://github.com/bencherdev/bencher) is a continuous benchmarking tool that supports `hyperfine` to
+track benchmarks and catch performance regressions in CI.
+
+Drop hyperfine JSON outputs onto the [Venz](https://try.venz.dev) chart to visualize the results,
+and manage hyperfine configurations.
 
 Make sure to check out the [`scripts` folder](https://github.com/sharkdp/hyperfine/tree/master/scripts)
 in this repository for a set of tools to work with `hyperfine` benchmark results.

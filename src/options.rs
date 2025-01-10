@@ -1,10 +1,10 @@
 use std::fs::File;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::{cmp, env, fmt, io};
 
 use anyhow::ensure;
-use atty::Stream;
 use clap::ArgMatches;
 
 use crate::command::Commands;
@@ -38,7 +38,7 @@ impl Default for Shell {
 impl fmt::Display for Shell {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Shell::Default(cmd) => write!(f, "{}", cmd),
+            Shell::Default(cmd) => write!(f, "{cmd}"),
             Shell::Custom(cmdline) => write!(f, "{}", shell_words::join(cmdline)),
         }
     }
@@ -95,6 +95,12 @@ pub enum OutputStyleOption {
     Disabled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOrder {
+    Command,
+    MeanTime,
+}
+
 /// Bounds for the number of benchmark runs
 pub struct RunBounds {
     /// Minimum number of benchmark runs
@@ -110,10 +116,36 @@ impl Default for RunBounds {
     }
 }
 
+#[derive(Debug, Default, Clone, PartialEq)]
+pub enum CommandInputPolicy {
+    /// Read from the null device
+    #[default]
+    Null,
+
+    /// Read input from a file
+    File(PathBuf),
+}
+
+impl CommandInputPolicy {
+    pub fn get_stdin(&self) -> io::Result<Stdio> {
+        let stream: Stdio = match self {
+            CommandInputPolicy::Null => Stdio::null(),
+
+            CommandInputPolicy::File(path) => {
+                let file: File = File::open(path)?;
+                Stdio::from(file)
+            }
+        };
+
+        Ok(stream)
+    }
+}
+
 /// How to handle the output of benchmarked commands
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CommandOutputPolicy {
     /// Redirect output to the null device
+    #[default]
     Null,
 
     /// Feed output through a pipe before discarding it
@@ -126,12 +158,6 @@ pub enum CommandOutputPolicy {
     Inherit,
 }
 
-impl Default for CommandOutputPolicy {
-    fn default() -> Self {
-        CommandOutputPolicy::Null
-    }
-}
-
 impl CommandOutputPolicy {
     pub fn get_stdout_stderr(&self) -> io::Result<(Stdio, Stdio)> {
         let streams = match self {
@@ -141,7 +167,7 @@ impl CommandOutputPolicy {
             CommandOutputPolicy::Pipe => (Stdio::piped(), Stdio::null()),
 
             CommandOutputPolicy::File(path) => {
-                let file = File::create(&path)?;
+                let file = File::create(path)?;
                 (file.into(), Stdio::null())
             }
 
@@ -152,6 +178,7 @@ impl CommandOutputPolicy {
     }
 }
 
+#[derive(Debug, PartialEq)]
 pub enum ExecutorKind {
     Raw,
     Shell(Shell),
@@ -178,8 +205,14 @@ pub struct Options {
     /// Whether or not to ignore non-zero exit codes
     pub command_failure_action: CmdFailureAction,
 
+    // Command to use as a reference for relative speed comparison
+    pub reference_command: Option<String>,
+
     /// Command(s) to run before each timing run
     pub preparation_command: Option<Vec<String>>,
+
+    /// Command(s) to run after each timing run
+    pub conclusion_command: Option<Vec<String>>,
 
     /// Command to run before each *batch* of timing runs, i.e. before each individual benchmark
     pub setup_command: Option<String>,
@@ -190,13 +223,22 @@ pub struct Options {
     /// What color mode to use for the terminal output
     pub output_style: OutputStyleOption,
 
+    /// How to order benchmarks in the relative speed comparison
+    pub sort_order_speed_comparison: SortOrder,
+
+    /// How to order benchmarks in the markup format exports
+    pub sort_order_exports: SortOrder,
+
     /// Determines how we run commands
     pub executor_kind: ExecutorKind,
 
-    /// What to do with the output of the benchmarked command
-    pub command_output_policy: CommandOutputPolicy,
+    /// Where input to the benchmarked command comes from
+    pub command_input_policy: CommandInputPolicy,
 
-    /// Which time unit to use when displaying resuls
+    /// What to do with the output of the benchmarked commands
+    pub command_output_policies: Vec<CommandOutputPolicy>,
+
+    /// Which time unit to use when displaying results
     pub time_unit: Option<Unit>,
 }
 
@@ -207,13 +249,18 @@ impl Default for Options {
             warmup_count: 0,
             min_benchmarking_time: 3.0,
             command_failure_action: CmdFailureAction::RaiseError,
+            reference_command: None,
             preparation_command: None,
+            conclusion_command: None,
             setup_command: None,
             cleanup_command: None,
             output_style: OutputStyleOption::Full,
+            sort_order_speed_comparison: SortOrder::MeanTime,
+            sort_order_exports: SortOrder::Command,
             executor_kind: ExecutorKind::default(),
-            command_output_policy: CommandOutputPolicy::Null,
+            command_output_policies: vec![CommandOutputPolicy::Null],
             time_unit: None,
+            command_input_policy: CommandInputPolicy::Null,
         }
     }
 }
@@ -223,7 +270,7 @@ impl Options {
         let mut options = Self::default();
         let param_to_u64 = |param| {
             matches
-                .value_of(param)
+                .get_one::<String>(param)
                 .map(|n| {
                     n.parse::<u64>()
                         .map_err(|e| OptionsError::IntParsingError(param, e))
@@ -260,42 +307,56 @@ impl Options {
             (None, None) => {}
         };
 
-        options.setup_command = matches.value_of("setup").map(String::from);
+        options.setup_command = matches.get_one::<String>("setup").map(String::from);
+
+        options.reference_command = matches.get_one::<String>("reference").map(String::from);
 
         options.preparation_command = matches
-            .values_of("prepare")
+            .get_many::<String>("prepare")
             .map(|values| values.map(String::from).collect::<Vec<String>>());
 
-        options.cleanup_command = matches.value_of("cleanup").map(String::from);
+        options.conclusion_command = matches
+            .get_many::<String>("conclude")
+            .map(|values| values.map(String::from).collect::<Vec<String>>());
 
-        options.command_output_policy = if matches.is_present("show-output") {
-            CommandOutputPolicy::Inherit
-        } else if let Some(output) = matches.value_of("output") {
-            match output {
-                "null" => CommandOutputPolicy::Null,
-                "pipe" => CommandOutputPolicy::Pipe,
-                "inherit" => CommandOutputPolicy::Inherit,
-                arg => {
-                    let path = PathBuf::from(arg);
-                    if path.components().count() <= 1 {
-                        return Err(OptionsError::UnknownOutputPolicy(arg.to_string()));
+        options.cleanup_command = matches.get_one::<String>("cleanup").map(String::from);
+
+        options.command_output_policies = if matches.get_flag("show-output") {
+            vec![CommandOutputPolicy::Inherit]
+        } else if let Some(output_values) = matches.get_many::<String>("output") {
+            let mut policies = vec![];
+            for value in output_values {
+                let policy = match value.as_str() {
+                    "null" => CommandOutputPolicy::Null,
+                    "pipe" => CommandOutputPolicy::Pipe,
+                    "inherit" => CommandOutputPolicy::Inherit,
+                    arg => {
+                        let path = PathBuf::from(arg);
+                        if path.components().count() <= 1 {
+                            return Err(OptionsError::UnknownOutputPolicy(arg.to_string()));
+                        }
+                        CommandOutputPolicy::File(path)
                     }
-                    CommandOutputPolicy::File(path)
-                }
+                };
+                policies.push(policy);
             }
+            policies
         } else {
-            CommandOutputPolicy::Null
+            vec![CommandOutputPolicy::Null]
         };
 
-        options.output_style = match matches.value_of("style") {
+        options.output_style = match matches.get_one::<String>("style").map(|s| s.as_str()) {
             Some("full") => OutputStyleOption::Full,
             Some("basic") => OutputStyleOption::Basic,
             Some("nocolor") => OutputStyleOption::NoColor,
             Some("color") => OutputStyleOption::Color,
             Some("none") => OutputStyleOption::Disabled,
             _ => {
-                if options.command_output_policy == CommandOutputPolicy::Inherit
-                    || !atty::is(Stream::Stdout)
+                if options
+                    .command_output_policies
+                    .iter()
+                    .any(|policy| *policy == CommandOutputPolicy::Inherit)
+                    || !io::stdout().is_terminal()
                 {
                     OutputStyleOption::Basic
                 } else if env::var_os("TERM")
@@ -322,10 +383,23 @@ impl Options {
             OutputStyleOption::Disabled => {}
         };
 
-        options.executor_kind = if matches.is_present("no-shell") {
+        (
+            options.sort_order_speed_comparison,
+            options.sort_order_exports,
+        ) = match matches.get_one::<String>("sort").map(|s| s.as_str()) {
+            None | Some("auto") => (SortOrder::MeanTime, SortOrder::Command),
+            Some("command") => (SortOrder::Command, SortOrder::Command),
+            Some("mean-time") => (SortOrder::MeanTime, SortOrder::MeanTime),
+            Some(_) => unreachable!("Unknown sort order"),
+        };
+
+        options.executor_kind = if matches.get_flag("no-shell") {
             ExecutorKind::Raw
         } else {
-            match (matches.is_present("debug-mode"), matches.value_of("shell")) {
+            match (
+                matches.get_flag("debug-mode"),
+                matches.get_one::<String>("shell"),
+            ) {
                 (false, Some(shell)) if shell == "default" => ExecutorKind::Shell(Shell::default()),
                 (false, Some(shell)) if shell == "none" => ExecutorKind::Raw,
                 (false, Some(shell)) => ExecutorKind::Shell(Shell::parse_from_str(shell)?),
@@ -335,32 +409,70 @@ impl Options {
             }
         };
 
-        if matches.is_present("ignore-failure") {
+        if matches.get_flag("ignore-failure") {
             options.command_failure_action = CmdFailureAction::Ignore;
         }
 
-        options.time_unit = match matches.value_of("time-unit") {
+        options.time_unit = match matches.get_one::<String>("time-unit").map(|s| s.as_str()) {
+            Some("microsecond") => Some(Unit::MicroSecond),
             Some("millisecond") => Some(Unit::MilliSecond),
             Some("second") => Some(Unit::Second),
             _ => None,
         };
 
-        if let Some(time) = matches.value_of("min-benchmarking-time") {
+        if let Some(time) = matches.get_one::<String>("min-benchmarking-time") {
             options.min_benchmarking_time = time
                 .parse::<f64>()
                 .map_err(|e| OptionsError::FloatParsingError("min-benchmarking-time", e))?;
         }
 
+        options.command_input_policy = if let Some(path_str) = matches.get_one::<String>("input") {
+            if path_str == "null" {
+                CommandInputPolicy::Null
+            } else {
+                let path = PathBuf::from(path_str);
+                if !path.exists() {
+                    return Err(OptionsError::StdinDataFileDoesNotExist(
+                        path_str.to_string(),
+                    ));
+                }
+                CommandInputPolicy::File(path)
+            }
+        } else {
+            CommandInputPolicy::Null
+        };
+
         Ok(options)
     }
 
-    pub fn validate_against_command_list(&self, commands: &Commands) -> Result<()> {
+    pub fn validate_against_command_list(&mut self, commands: &Commands) -> Result<()> {
+        let has_reference_command = self.reference_command.is_some();
+        let num_commands = commands.num_commands(has_reference_command);
+
         if let Some(preparation_command) = &self.preparation_command {
             ensure!(
-                preparation_command.len() <= 1
-                    || commands.num_commands() == preparation_command.len(),
-                "The '--prepare' option has to be provided just once or N times, where N is the \
-             number of benchmark commands."
+                preparation_command.len() <= 1 || num_commands == preparation_command.len(),
+                "The '--prepare' option has to be provided just once or N times, where N={num_commands} is the \
+                 number of benchmark commands (including a potential reference)."
+            );
+        }
+
+        if let Some(conclusion_command) = &self.conclusion_command {
+            ensure!(
+                conclusion_command.len() <= 1 || num_commands == conclusion_command.len(),
+                "The '--conclude' option has to be provided just once or N times, where N={num_commands} is the \
+                 number of benchmark commands (including a potential reference)."
+            );
+        }
+
+        if self.command_output_policies.len() == 1 {
+            self.command_output_policies =
+                vec![self.command_output_policies[0].clone(); num_commands];
+        } else {
+            ensure!(
+                self.command_output_policies.len() == num_commands,
+                "The '--output' option has to be provided just once or N times, where N={num_commands} is the \
+                 number of benchmark commands (including a potential reference)."
             );
         }
 
@@ -372,7 +484,7 @@ impl Options {
 fn test_default_shell() {
     let shell = Shell::default();
 
-    let s = format!("{}", shell);
+    let s = format!("{shell}");
     assert_eq!(&s, DEFAULT_SHELL);
 
     let cmd = shell.command();
@@ -383,7 +495,7 @@ fn test_default_shell() {
 fn test_can_parse_shell_command_line_from_str() {
     let shell = Shell::parse_from_str("shell -x 'aaa bbb'").unwrap();
 
-    let s = format!("{}", shell);
+    let s = format!("{shell}");
     assert_eq!(&s, "shell -x 'aaa bbb'");
 
     let cmd = shell.command();

@@ -4,6 +4,7 @@ use csv::WriterBuilder;
 
 use super::Exporter;
 use crate::benchmark::benchmark_result::BenchmarkResult;
+use crate::options::SortOrder;
 use crate::util::units::Unit;
 
 use anyhow::Result;
@@ -12,7 +13,12 @@ use anyhow::Result;
 pub struct CsvExporter {}
 
 impl Exporter for CsvExporter {
-    fn serialize(&self, results: &[BenchmarkResult], _unit: Option<Unit>) -> Result<Vec<u8>> {
+    fn serialize(
+        &self,
+        results: &[BenchmarkResult],
+        _unit: Option<Unit>,
+        _sort_order: SortOrder,
+    ) -> Result<Vec<u8>> {
         let mut writer = WriterBuilder::new().from_writer(vec![]);
 
         {
@@ -25,7 +31,7 @@ impl Exporter for CsvExporter {
             .collect();
             if let Some(res) = results.first() {
                 for param_name in res.parameters.keys() {
-                    headers.push(Cow::Owned(format!("parameter_{}", param_name).into_bytes()));
+                    headers.push(Cow::Owned(format!("parameter_{param_name}").into_bytes()));
                 }
             }
             writer.write_record(headers)?;
@@ -61,7 +67,8 @@ fn test_csv() {
 
     let results = vec![
         BenchmarkResult {
-            command: String::from("FOO=one BAR=two command | 1"),
+            command: String::from("command_a"),
+            command_with_unused_parameters: String::from("command_a"),
             mean: 1.0,
             stddev: Some(2.0),
             median: 1.0,
@@ -70,6 +77,7 @@ fn test_csv() {
             min: 5.0,
             max: 6.0,
             times: Some(vec![7.0, 8.0, 9.0]),
+            memory_usage_byte: None,
             exit_codes: vec![Some(0), Some(0), Some(0)],
             parameters: {
                 let mut params = BTreeMap::new();
@@ -79,7 +87,8 @@ fn test_csv() {
             },
         },
         BenchmarkResult {
-            command: String::from("FOO=one BAR=seven command | 2"),
+            command: String::from("command_b"),
+            command_with_unused_parameters: String::from("command_b"),
             mean: 11.0,
             stddev: Some(12.0),
             median: 11.0,
@@ -88,6 +97,7 @@ fn test_csv() {
             min: 15.0,
             max: 16.5,
             times: Some(vec![17.0, 18.0, 19.0]),
+            memory_usage_byte: None,
             exit_codes: vec![Some(0), Some(0), Some(0)],
             parameters: {
                 let mut params = BTreeMap::new();
@@ -97,14 +107,17 @@ fn test_csv() {
             },
         },
     ];
-    let exps: String = String::from(
-        "command,mean,stddev,median,user,system,min,max,parameter_bar,parameter_foo\n\
-        FOO=one BAR=two command | 1,1,2,1,3,4,5,6,two,one\n\
-        FOO=one BAR=seven command | 2,11,12,11,13,14,15,16.5,seven,one\n\
-        ",
-    );
-    let gens =
-        String::from_utf8(exporter.serialize(&results, Some(Unit::Second)).unwrap()).unwrap();
 
-    assert_eq!(exps, gens);
+    let actual = String::from_utf8(
+        exporter
+            .serialize(&results, Some(Unit::Second), SortOrder::Command)
+            .unwrap(),
+    )
+    .unwrap();
+
+    insta::assert_snapshot!(actual, @r#"
+    command,mean,stddev,median,user,system,min,max,parameter_bar,parameter_foo
+    command_a,1,2,1,3,4,5,6,two,one
+    command_b,11,12,11,13,14,15,16.5,seven,one
+    "#);
 }

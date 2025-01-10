@@ -11,7 +11,10 @@ use nix::fcntl::{splice, SpliceFFlags};
 #[cfg(target_os = "linux")]
 use std::fs::File;
 #[cfg(target_os = "linux")]
-use std::os::unix::io::AsRawFd;
+use std::os::fd::AsFd;
+
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
 use crate::util::units::Second;
 use wall_clock_timer::WallClockTimer;
@@ -29,6 +32,9 @@ struct CPUTimes {
 
     /// Total amount of time spent executing in kernel mode
     pub system_usec: i64,
+
+    /// Maximum amount of memory used by the process, in bytes
+    pub memory_usage_byte: u64,
 }
 
 /// Used to indicate the result of running a command
@@ -37,7 +43,7 @@ pub struct TimerResult {
     pub time_real: Second,
     pub time_user: Second,
     pub time_system: Second,
-
+    pub memory_usage_byte: u64,
     /// The exit status of the process
     pub status: ExitStatus,
 }
@@ -50,9 +56,9 @@ fn discard(output: ChildStdout) {
     {
         if let Ok(file) = File::create("/dev/null") {
             while let Ok(bytes) = splice(
-                output.as_raw_fd(),
+                output.as_fd(),
                 None,
-                file.as_raw_fd(),
+                file.as_fd(),
                 None,
                 CHUNK_SIZE,
                 SpliceFFlags::empty(),
@@ -82,8 +88,8 @@ pub fn execute_and_measure(mut command: Command) -> Result<TimerResult> {
     {
         use std::os::windows::process::CommandExt;
 
-        // Create a suspended process
-        command.creation_flags(4);
+        // Create the process in a suspended state so that we don't miss any cpu time between process creation and `CPUTimer` start.
+        command.creation_flags(CREATE_SUSPENDED);
     }
 
     let wallclock_timer = WallClockTimer::start();
@@ -103,12 +109,13 @@ pub fn execute_and_measure(mut command: Command) -> Result<TimerResult> {
     let status = child.wait()?;
 
     let time_real = wallclock_timer.stop();
-    let (time_user, time_system) = cpu_timer.stop();
+    let (time_user, time_system, memory_usage_byte) = cpu_timer.stop();
 
     Ok(TimerResult {
         time_real,
         time_user,
         time_system,
+        memory_usage_byte,
         status,
     })
 }

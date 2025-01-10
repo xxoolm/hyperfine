@@ -1,10 +1,77 @@
-# unreleased
+# v1.19.0
 
 ## Features
 
+- Add a new `--reference <cmd>` option to specify a reference command for the relative speed comparison, see #579, #577 and #744 (@sharkdp)
+- Add `--conclude` argument (analog to `--prepare`), see #565 and #719 (@jackoconnordev)
+- Allow `--output=…` to appear once for each command, enabling use cases like `hyperfine --output=null my-cmd --output=./file.log my-cmd`, see #529 and #775 (@sharkdp)
+- The environment variable `$HYPERFINE_ITERATION` will now contain the current iteration number for each benchmarked command, see #775 (@sharkdp)
+- Add iteration information to failure error message, see #771 and #772 (@sharkdp)
+- Python scripts: 
+  - legend modification parameters and output DPI, see #758 (@Spreadcat)
+  - Nicer whiskers plot, see #727 (@serpent7776)
+
+## Bugfixes
+
+- ETA not clearly visible on terminals with a block cursor, see #698 and #699 (@overclockworked64)
+- Fix zsh completions, see #717 (@xzfc)
+
+## Other
+
+- Build binaries for aarch64-apple-darwin, see #728 (@Phault)
+- Various cleanups (@hamirmahal, @one230six)
+
+# v1.18.0
+
+## Features
+
+- Add support for microseconds via `--time-unit microsecond`, see #684 (@sharkdp)
+
+## Bugfixes
+
+- Proper argument quoting on Windows CMD, see #296 and #678 (@PedroWitzel)
+
+
+# v1.17.0
+
+## Features
+
+- Add new `--sort` option to control the order in the rel. speed comparison and in markup export formats, see #601, #614, #655 (@sharkdp)
+- Parameters which are unused in the command line are now displayed in parentheses, see #600 and #644 (@sharkdp).
+- Added `--log-count` option for histogram plots, see `scripts/plot_histogram.py` (@sharkdp)
 
 ## Changes
 
+- Updated hyperfine to use `windows-sys` instead of the unmaintained `winapi`, see #624, #639, #636, #641 (@clemenswasser)
+- Silenced deprecation warning in Python scripts, see #633 (@nicovank)
+- Major update of the man page, see 0ce6578, #647 (@sharkdp)
+
+## Bugfixes
+
+- Do not export intermediate results to stdout when using `-` as a file name, see #640 and #643 (@sharkdp)
+- Markup exporting does not fail if benchmark results are zero, see #642 (@sharkdp)
+
+
+# v1.16.1
+
+## Bugfixes
+
+- Fix line-wrapping of `--help` text (@sharkdp)
+- Fix `--input=null` (@sharkdp)
+
+
+# v1.16.0
+
+## Features
+
+- Added new `--input` option, see #541 and #563 (@snease)
+- Added possibility to specify `-` as the filename in the
+  `--export-*` options, see #615 and #623 (@humblepenguinn)
+
+## Changes
+
+- Improve hints for outlier warnings if `--warmup` or `--prepare` are in use already,
+  see #570 (@sharkdp)
 
 ## Bugfixes
 
@@ -14,10 +81,8 @@
 
 ## Other
 
-
-## Packaging
-
-
+- Thanks to @berombau for working on dependency upgrades, see #584
+- Fixed installationm on Windows, see #595 and #596 (@AntoniosBarotsis)
 
 
 # v1.15.0
